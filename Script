@@ -1,0 +1,343 @@
+echo "<td>";
+
+// Bearbeiten-Button (GET)
+echo "<form method=\"get\" action=\"\" style=\"display:inline-block; margin-right:5px;\">";
+echo "<input type=\"hidden\" name=\"edit_user\" value=\"" . (int)$row["id"] . "\">";
+echo "<input type=\"hidden\" name=\"edit_adresse\" value=\"" . (int)$row["adresse_id"] . "\">";
+echo "<button type=\"submit\">Bearbeiten</button>";
+echo "</form>";
+
+// Löschen-Button (POST)
+echo "<form method=\"post\" action=\"\" style=\"display:inline-block;\" ";
+echo "onsubmit=\"return confirm('Diesen Datensatz wirklich löschen?');\">";
+echo "<input type=\"hidden\" name=\"user_id\" value=\"" . (int)$row["id"] . "\">";
+echo "<input type=\"hidden\" name=\"adresse_id\" value=\"" . (int)$row["adresse_id"] . "\">";
+echo "<button type=\"submit\" name=\"delete\" value=\"1\">Löschen</button>";
+echo "</form>";
+
+echo "</td>";
+
+
+
+
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+
+    // 1) Prüfen: Ist es ein Lösch-Vorgang?
+    if (isset($_POST["delete"]) && isset($_POST["user_id"]) && isset($_POST["adresse_id"])) {
+        $userId = (int)$_POST["user_id"];
+        $adresseId = (int)$_POST["adresse_id"];
+
+        if ($userId > 0 && $adresseId > 0) {
+            // Erst Verknüpfung löschen
+            $stmtDelLink = $conn->prepare(
+                "DELETE FROM users_adresse WHERE users_id = ? AND adresse_id = ?"
+            );
+            $stmtDelLink->bind_param("ii", $userId, $adresseId);
+            if (!$stmtDelLink->execute()) {
+                $errors[] = "Fehler beim Löschen der Verknüpfung.";
+            }
+            $stmtDelLink->close();
+
+            // Adresse löschen
+            $stmtDelAdr = $conn->prepare(
+                "DELETE FROM adresse WHERE id = ?"
+            );
+            $stmtDelAdr->bind_param("i", $adresseId);
+            if (!$stmtDelAdr->execute()) {
+                $errors[] = "Fehler beim Löschen der Adresse.";
+            }
+            $stmtDelAdr->close();
+
+            // User löschen
+            $stmtDelUser = $conn->prepare(
+                "DELETE FROM users WHERE id = ?"
+            );
+            $stmtDelUser->bind_param("i", $userId);
+            if (!$stmtDelUser->execute()) {
+                $errors[] = "Fehler beim Löschen des Benutzers.";
+            }
+            $stmtDelUser->close();
+
+            if (empty($errors)) {
+                $success = "Datensatz wurde erfolgreich gelöscht.";
+            }
+        } else {
+            $errors[] = "Ungültige IDs zum Löschen.";
+        }
+
+        // Wichtig: Rücksprung, damit der Speichern-Code NICHT auch noch läuft
+        return;
+    }
+
+    // 2) Wenn kein delete gesetzt ist → normaler Speichern-/Update-Vorgang
+
+    $name = trim($_POST["name"] ?? "");
+    $vorname = trim($_POST["vorname"] ?? "");
+    $email = trim($_POST["email"] ?? "");
+    $street = trim($_POST["street"] ?? "");
+    $zip = trim($_POST["zip"] ?? "");
+    $city = trim($_POST["city"] ?? "");
+    $telefon = trim($_POST["telefon"] ?? "");
+
+    $userId = isset($_POST["user_id"]) ? (int)$_POST["user_id"] : 0;
+    $adresseId = isset($_POST["adresse_id"]) ? (int)$_POST["adresse_id"] : 0;
+
+    if ($zip === "" || strlen($zip) !== 5 || !ctype_digit($zip)) {
+        $errors[] = "Die Postleitzahl muss genau fünf Ziffern enthalten.";
+    }
+
+    if ($email === "" || !str_contains($email, "@") || !str_contains($email, ".")) {
+        $errors[] = "Die E-Mail-Adresse muss ein @ Zeichen und einen Punkt enthalten.";
+    }
+
+    if ($telefon === "" || !preg_match('/^0{1,2}[1-9][0-9]{5,13}$/', $telefon)) {
+        $errors[] = "Die Telefonnummer ist ungültig.";
+    }
+
+    if ($name === "" || $vorname === "" || $street === "" || $city === "") {
+        $errors[] = "Alle Pflichtfelder müssen ausgefüllt werden.";
+    }
+
+    if (empty($errors)) {
+        if ($userId > 0 && $adresseId > 0) {
+            // UPDATE-Fall
+            $stmtUserUpdate = $conn->prepare(
+                "UPDATE users SET name = ?, vorname = ?, email = ?, telefonnummer = ? WHERE id = ?"
+            );
+            $stmtUserUpdate->bind_param("ssssi", $name, $vorname, $email, $telefon, $userId);
+            if (!$stmtUserUpdate->execute()) {
+                $errors[] = "Fehler beim Aktualisieren des Benutzers.";
+            }
+            $stmtUserUpdate->close();
+
+            $stmtAdrUpdate = $conn->prepare(
+                "UPDATE adresse SET street = ?, zip = ?, city = ? WHERE id = ?"
+            );
+            $stmtAdrUpdate->bind_param("sssi", $street, $zip, $city, $adresseId);
+            if (!$stmtAdrUpdate->execute()) {
+                $errors[] = "Fehler beim Aktualisieren der Adresse.";
+            }
+            $stmtAdrUpdate->close();
+
+            if (empty($errors)) {
+                $success = "Datensatz erfolgreich aktualisiert.";
+            }
+        } else {
+            // INSERT-Fall
+            $stmtUser = $conn->prepare(
+                "INSERT INTO users (name, vorname, email, telefonnummer) VALUES (?, ?, ?, ?)"
+            );
+            $stmtUser->bind_param("ssss", $name, $vorname, $email, $telefon);
+            if ($stmtUser->execute()) {
+                $userId = $stmtUser->insert_id;
+                $stmtUser->close();
+
+                $stmtAdr = $conn->prepare(
+                    "INSERT INTO adresse (street, zip, city) VALUES (?, ?, ?)"
+                );
+                $stmtAdr->bind_param("sss", $street, $zip, $city);
+                if ($stmtAdr->execute()) {
+                    $adresseId = $stmtAdr->insert_id;
+                    $stmtAdr->close();
+
+                    $stmtLink = $conn->prepare(
+                        "INSERT INTO users_adresse (users_id, adresse_id) VALUES (?, ?)"
+                    );
+                    $stmtLink->bind_param("ii", $userId, $adresseId);
+                    if ($stmtLink->execute()) {
+                        $success = "Datensatz erfolgreich gespeichert.";
+                    } else {
+                        $errors[] = "Fehler beim Speichern der Verknüpfung.";
+                    }
+                    $stmtLink->close();
+                } else {
+                    $errors[] = "Fehler beim Speichern der Adresse.";
+                }
+            } else {
+                $errors[] = "Fehler beim Speichern des Benutzers.";
+            }
+        }
+    }
+}
+
+
+löschen oben 
+
+echo "<td>";
+
+// Bearbeiten (GET)
+echo "<form method=\"get\" action=\"\" style=\"display:inline-block; margin-right:5px;\">";
+echo "<input type=\"hidden\" name=\"edit_user\" value=\"" . (int)$row["id"] . "\">";
+echo "<input type=\"hidden\" name=\"edit_adresse\" value=\"" . (int)$row["adresse_id"] . "\">";
+echo "<button type=\"submit\">Bearbeiten</button>";
+echo "</form>";
+
+// Kopieren (POST)
+echo "<form method=\"post\" action=\"\" style=\"display:inline-block; margin-right:5px;\">";
+echo "<input type=\"hidden\" name=\"user_id\" value=\"" . (int)$row["id"] . "\">";
+echo "<input type=\"hidden\" name=\"adresse_id\" value=\"" . (int)$row["adresse_id"] . "\">";
+echo "<button type=\"submit\" name=\"copy\" value=\"1\">Kopieren</button>";
+echo "</form>";
+
+// Löschen (POST)
+echo "<form method=\"post\" action=\"\" style=\"display:inline-block;\" ";
+echo "onsubmit=\"return confirm('Diesen Datensatz wirklich löschen?');\">";
+echo "<input type=\"hidden\" name=\"user_id\" value=\"" . (int)$row["id"] . "\">";
+echo "<input type=\"hidden\" name=\"adresse_id\" value=\"" . (int)$row["adresse_id"] . "\">";
+echo "<button type=\"submit\" name=\"delete\" value=\"1\">Löschen</button>";
+echo "</form>";
+
+echo "</td>";
+
+
+
+
+
+
+
+
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+
+    // 1) Löschen
+    if (isset($_POST["delete"]) && isset($_POST["user_id"]) && isset($_POST["adresse_id"])) {
+        $userId = (int)$_POST["user_id"];
+        $adresseId = (int)$_POST["adresse_id"];
+
+        if ($userId > 0 && $adresseId > 0) {
+            // Verknüpfung löschen
+            $stmtDelLink = $conn->prepare(
+                "DELETE FROM users_adresse WHERE users_id = ? AND adresse_id = ?"
+            );
+            $stmtDelLink->bind_param("ii", $userId, $adresseId);
+            if (!$stmtDelLink->execute()) {
+                $errors[] = "Fehler beim Löschen der Verknüpfung.";
+            }
+            $stmtDelLink->close();
+
+            // Adresse löschen
+            $stmtDelAdr = $conn->prepare(
+                "DELETE FROM adresse WHERE id = ?"
+            );
+            $stmtDelAdr->bind_param("i", $adresseId);
+            if (!$stmtDelAdr->execute()) {
+                $errors[] = "Fehler beim Löschen der Adresse.";
+            }
+            $stmtDelAdr->close();
+
+            // User löschen
+            $stmtDelUser = $conn->prepare(
+                "DELETE FROM users WHERE id = ?"
+            );
+            $stmtDelUser->bind_param("i", $userId);
+            if (!$stmtDelUser->execute()) {
+                $errors[] = "Fehler beim Löschen des Benutzers.";
+            }
+            $stmtDelUser->close();
+
+            if (empty($errors)) {
+                $success = "Datensatz wurde erfolgreich gelöscht.";
+            }
+        } else {
+            $errors[] = "Ungültige IDs zum Löschen.";
+        }
+
+        return;
+    }
+
+    // 2) Kopieren
+    if (isset($_POST["copy"]) && isset($_POST["user_id"]) && isset($_POST["adresse_id"])) {
+        $userId    = (int)$_POST["user_id"];
+        $adresseId = (int)$_POST["adresse_id"];
+
+        if ($userId > 0 && $adresseId > 0) {
+
+            // Original-Datensatz auslesen
+            $sqlCopy = "
+                SELECT
+                    users.name,
+                    users.vorname,
+                    users.email,
+                    users.telefonnummer,
+                    adresse.street,
+                    adresse.zip,
+                    adresse.city
+                FROM users
+                INNER JOIN users_adresse
+                    ON users.id = users_adresse.users_id
+                INNER JOIN adresse
+                    ON adresse.id = users_adresse.adresse_id
+                WHERE users.id = ? AND adresse.id = ?
+                LIMIT 1
+            ";
+
+            $stmtCopy = $conn->prepare($sqlCopy);
+            $stmtCopy->bind_param("ii", $userId, $adresseId);
+            $stmtCopy->execute();
+            $resultCopy = $stmtCopy->get_result();
+
+            if ($rowCopy = $resultCopy->fetch_assoc()) {
+
+                // Werte aus dem Original
+                $name      = $rowCopy["name"];
+                $vorname   = $rowCopy["vorname"];
+                $email     = $rowCopy["email"];
+                $telefon   = $rowCopy["telefonnummer"];
+                $street    = $rowCopy["street"];
+                $zip       = $rowCopy["zip"];
+                $city      = $rowCopy["city"];
+
+                // OPTIONAL: Name leicht markieren, z.B. "(Kopie)"
+                // $name .= " (Kopie)";
+
+                // Neuen User anlegen
+                $stmtUser = $conn->prepare(
+                    "INSERT INTO users (name, vorname, email, telefonnummer) VALUES (?, ?, ?, ?)"
+                );
+                $stmtUser->bind_param("ssss", $name, $vorname, $email, $telefon);
+                if ($stmtUser->execute()) {
+                    $newUserId = $stmtUser->insert_id;
+                    $stmtUser->close();
+
+                    // Neue Adresse anlegen
+                    $stmtAdr = $conn->prepare(
+                        "INSERT INTO adresse (street, zip, city) VALUES (?, ?, ?)"
+                    );
+                    $stmtAdr->bind_param("sss", $street, $zip, $city);
+                    if ($stmtAdr->execute()) {
+                        $newAdresseId = $stmtAdr->insert_id;
+                        $stmtAdr->close();
+
+                        // Verknüpfung anlegen
+                        $stmtLink = $conn->prepare(
+                            "INSERT INTO users_adresse (users_id, adresse_id) VALUES (?, ?)"
+                        );
+                        $stmtLink->bind_param("ii", $newUserId, $newAdresseId);
+                        if ($stmtLink->execute()) {
+                            $success = "Datensatz wurde erfolgreich kopiert.";
+                        } else {
+                            $errors[] = "Fehler beim Speichern der Verknüpfung (Kopie).";
+                        }
+                        $stmtLink->close();
+                    } else {
+                        $errors[] = "Fehler beim Speichern der Adresse (Kopie).";
+                    }
+                } else {
+                    $errors[] = "Fehler beim Speichern des Benutzers (Kopie).";
+                }
+            } else {
+                $errors[] = "Original-Datensatz zum Kopieren wurde nicht gefunden.";
+            }
+
+            $stmtCopy->close();
+        } else {
+            $errors[] = "Ungültige IDs zum Kopieren.";
+        }
+
+        return;
+    }
+
+    // 3) Normale Speichern-/Update-Logik wie bisher:
+    //    (dein vorhandener Code: Validierung, Update oder Insert)
+    // ...
+}
+
